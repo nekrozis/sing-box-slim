@@ -5,8 +5,13 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 
 source_dir="${SING_BOX_SOURCE:-sing-box}"
+
+SING_BOX_REF="$(./scripts/resolve-version.sh SING_BOX_REF)"
+GO_VERSION="$(./scripts/resolve-version.sh GO_VERSION)"
+export SING_BOX_REF GO_VERSION
+
 if [ ! -d "$source_dir/.git" ]; then
-  ./scripts/fetch-sing-box.sh "${SING_BOX_REF:-v1.14.4}" "$source_dir"
+  ./scripts/fetch-sing-box.sh "$SING_BOX_REF" "$source_dir"
 fi
 
 version="${SING_BOX_VERSION:-}"

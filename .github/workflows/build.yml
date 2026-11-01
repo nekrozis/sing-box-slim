@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       sing_box_ref:
-        description: sing-box tag, branch, or commit
-        required: true
-        default: v1.14.4
+        description: "sing-box tag, branch, or commit (default: versions.env)"
+        required: false
+        default: ""
         type: string
       sing_box_version:
         description: Optional version label override (defaults to tag, or 0.0.0-<sha>)
@@ -14,9 +14,9 @@ on:
         default: ""
         type: string
       go_version:
-        description: Go toolchain version
-        required: true
-        default: "1.27.3"
+        description: "Go toolchain version (default: versions.env)"
+        required: false
+        default: ""
         type: string
   push:
     branches: [main]
@@ -25,6 +25,7 @@ on:
       - ".github/workflows/build.yml"
       - "scripts/**"
       - "Makefile"
+      - "versions.env"
 
 permissions:
   contents: read
@@ -35,23 +36,39 @@ concurrency:
 
 env:
   SING_BOX_REPO: https://github.com/SagerNet/sing-box.git
-  SING_BOX_REF: ${{ github.event_name == 'workflow_dispatch' && inputs.sing_box_ref || 'v1.14.4' }}
   SING_BOX_VERSION_OVERRIDE: ${{ github.event_name == 'workflow_dispatch' && inputs.sing_box_version || '' }}
-  GO_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.go_version || '1.27.3' }}
 
 jobs:
   meta:
     name: resolve source
     runs-on: ubuntu-24.04
     outputs:
+      sing_box_ref: ${{ steps.versions.outputs.sing_box_ref }}
+      go_version: ${{ steps.versions.outputs.go_version }}
       version: ${{ steps.resolve.outputs.version }}
       version_number: ${{ steps.resolve.outputs.version_number }}
       commit: ${{ steps.resolve.outputs.commit }}
       epoch: ${{ steps.resolve.outputs.epoch }}
     steps:
       - uses: actions/checkout@v7.0.1
+      - name: Resolve versions
+        id: versions
+        shell: bash
+        env:
+          SING_BOX_REF: ${{ github.event_name == 'workflow_dispatch' && inputs.sing_box_ref || '' }}
+          GO_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.go_version || '' }}
+        run: |
+          set -euo pipefail
+          sing_box_ref="$(./scripts/resolve-version.sh SING_BOX_REF)"
+          go_version="$(./scripts/resolve-version.sh GO_VERSION)"
+          {
+            echo "sing_box_ref=${sing_box_ref}"
+            echo "go_version=${go_version}"
+          } >>"$GITHUB_OUTPUT"
+          echo "sing-box ref: ${sing_box_ref}"
+          echo "Go version: ${go_version}"
       - name: Fetch sing-box source
-        run: ./scripts/fetch-sing-box.sh "$SING_BOX_REF" sing-box
+        run: ./scripts/fetch-sing-box.sh "${{ steps.versions.outputs.sing_box_ref }}" sing-box
       - name: Resolve version, commit, and timestamp
         id: resolve
         shell: bash
@@ -105,11 +122,11 @@ jobs:
     steps:
       - uses: actions/checkout@v7.0.1
       - name: Fetch sing-box source
-        run: ./scripts/fetch-sing-box.sh "$SING_BOX_REF" sing-box
-      - name: Set up Go ${{ env.GO_VERSION }}
+        run: ./scripts/fetch-sing-box.sh "${{ needs.meta.outputs.sing_box_ref }}" sing-box
+      - name: Set up Go ${{ needs.meta.outputs.go_version }}
         uses: actions/setup-go@v7.0.0
         with:
-          go-version: ${{ env.GO_VERSION }}
+          go-version: ${{ needs.meta.outputs.go_version }}
           check-latest: false
           cache: false
       - name: Build
@@ -118,6 +135,7 @@ jobs:
           OUTPUT_DIR: out/${{ matrix.flavor }}-${{ matrix.target }}
           SING_BOX_VERSION: ${{ needs.meta.outputs.version }}
           SING_BOX_COMMIT: ${{ needs.meta.outputs.commit }}
+          GO_VERSION: ${{ needs.meta.outputs.go_version }}
           SOURCE_DATE_EPOCH: ${{ needs.meta.outputs.epoch }}
         run: ./scripts/build.sh
       - name: Upload ${{ matrix.flavor }} ${{ matrix.target }}

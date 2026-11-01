@@ -11,12 +11,29 @@
 | `linux/amd64` (`GOAMD64=v3`, CGO off) | `8c049a001c1ffd185a9fe60cf23ca9fb71d774fcd7192b9280a2b27474af07cd` |
 | `windows/amd64` (`GOAMD64=v3`, CGO off) | `cd97efc17cdaa83305dba8a94b021dd51d50c82afe3104a3bca7474ddd2d9176` |
 
-以上哈希对应 sing-box `v1.14.4`（commit `c005f35300ce76427dc285481ec5695f5b179cd2`）和 Go `1.27.3`。
+以上哈希对应 `versions.env` 当前的 sing-box `v1.14.4`（commit `c005f35300ce76427dc285481ec5695f5b179cd2`）和 Go `1.27.3`。
+
+## 版本来源
+
+版本不写死在 CI 中。解析顺序：
+
+1. `workflow_dispatch` 输入，或本地环境变量。
+2. 仓库根目录的 `versions.env`。
+3. 两者都没有时，`meta` job 或本地脚本直接失败。
+
+`versions.env` 是唯一默认来源：
+
+```text
+SING_BOX_REF=v1.14.4
+GO_VERSION=1.27.3
+```
+
+修改默认版本只需编辑这个文件。`SING_BOX_VERSION` 是可选的结果标签覆盖，不属于必须解析的版本。
 
 ## 构建配置
 
-- sing-box 版本：默认 `v1.14.4`，可通过 workflow input 指定 tag、branch 或 commit。
-- Go 版本：默认 `1.27.3`，精确锁定，`GOTOOLCHAIN=local` 禁止自动切换。
+- sing-box 版本：由 `versions.env` 的 `SING_BOX_REF` 管理，支持 tag、branch 或 commit；workflow input 可临时覆盖。
+- Go 版本：由 `versions.env` 的 `GO_VERSION` 管理；workflow input 可临时覆盖。精确锁定，`GOTOOLCHAIN=local` 禁止自动切换。
 - `CGO_ENABLED=0`。
 - 目标：`linux/amd64`、`windows/amd64`。
 - `GOAMD64=v3`，产物需要支持 AVX2 等 x86-64-v3 指令集的 CPU。
@@ -72,8 +89,10 @@ CI 的 `build` job 在 `ubuntu-24.04` 和 `ubuntu-22.04` 上分别构建同一�
 ├── .github/workflows/build.yml   # GitHub Actions
 ├── Makefile
 ├── README.md
+├── versions.env                  # 受管理的 sing-box / Go 版本
 ├── scripts/
 │   ├── fetch-sing-box.sh         # 拉取指定 tag/branch/commit
+│   ├── resolve-version.sh        # 版本解析：环境变量 > versions.env
 │   ├── build.sh                  # 单目标构建 + 元数据检查
 │   ├── verify-reproducible.sh    # 两次构建逐字节比较
 │   ├── assemble.sh               # 汇总最终产物和 SHA256SUMS
@@ -86,7 +105,7 @@ CI 的 `build` job 在 `ubuntu-24.04` 和 `ubuntu-22.04` 上分别构建同一�
 ## 本地使用
 
 ```bash
-# 克隆 sing-box v1.14.4 到 ./sing-box
+# 按 versions.env 的 SING_BOX_REF 克隆源码到 ./sing-box
 make source
 
 # 构建 Linux + Windows
@@ -108,14 +127,19 @@ dist/windows-amd64v3/sing-box.exe.sha256
 dist/windows-amd64v3/build-info.txt
 ```
 
-指定其他版本：
+临时覆盖 `versions.env`：
 
 ```bash
+# 切换源码版本；会重新克隆 sing-box/
 make fetch SING_BOX_REF=v1.14.4
-make build SING_BOX_VERSION=v1.14.4
+
+# 临时换 Go 版本和结果标签
+make build GO_VERSION=1.27.3 SING_BOX_VERSION=v1.14.4
 ```
 
-`make fetch` 会删除并重新克隆 `sing-box/`，本地对该目录的修改会丢失。
+如果 `SING_BOX_REF`/`GO_VERSION` 既没有通过环境变量或命令行传入，也不在 `versions.env` 中，Makefile 和 `local-repro.sh` 会直接报错退出。
+
+`make fetch` 会删除并重新克隆 `sing-box/`，本地对该目录的修改会丢失。修改 `versions.env` 的 `SING_BOX_REF` 后，也要执行 `make fetch` 更新已存在的 `sing-box/`；`make source` 只在目录缺失时克隆。
 
 ## GitHub Actions
 
@@ -123,13 +147,13 @@ make build SING_BOX_VERSION=v1.14.4
 
 | 输入 | 默认值 | 说明 |
 | --- | --- | --- |
-| `sing_box_ref` | `v1.14.4` | sing-box tag、branch 或 commit SHA |
+| `sing_box_ref` | 空（回退到 `versions.env`） | sing-box tag、branch 或 commit SHA |
 | `sing_box_version` | 空 | 可选的版本标签；留空时 tag 用 tag 名，commit 用 `0.0.0-<sha>` |
-| `go_version` | `1.27.3` | Go 工具链版本，必须是精确版本，不能写 `1.27` 或版本范围 |
+| `go_version` | 空（回退到 `versions.env`） | Go 工具链版本，必须是精确版本，不能写 `1.27` 或版本范围 |
 
 Job 流程：
 
-1. `meta`：拉取源码，解析 commit、版本号和 commit 时间戳。
+1. `meta`：先解析 `SING_BOX_REF`/`GO_VERSION`（输入 > `versions.env` > 失败），再拉取源码，解析 commit、版本号和 commit 时间戳。版本解析失败时不会进入构建。
 2. `build`：4 个矩阵任务，Linux/Windows × `ubuntu-24.04`/`ubuntu-22.04`。Windows 目标在 Linux runner 上交叉编译。
 3. `verify`：下载 4 组产物，逐字节比较；运行 Linux 产物；汇总最终 artifact。
 4. `smoke-windows`：在 `windows-latest` 上校验 SHA256 并实际运行 `sing-box.exe version`，确认交叉编译产物可用。
@@ -156,6 +180,6 @@ sha256sum -c SHA256SUMS
 - `GOAMD64=v3` 产物不能在只支持 x86-64-v1/v2 的 CPU 上运行；会因非法指令崩溃。
 - 只构建 `amd64`，没有 ARM64 产物。
 - 严格复现需要相同的源码 commit 和相同的 Go 版本。tag 可能被上游移动，长期归档建议使用 commit SHA。
-- GitHub 托管 runner 镜像会更新。CI 的双 runner 比较可以发现 toolchain 或环境导致的差异；如果需要完全固定的构建用户态，可以把构建放进固定 digest 的容器镜像，例如 `golang:1.27.3-bookworm`。
+- GitHub 托管 runner 镜像会更新。CI 的双 runner 比较可以发现 toolchain 或环境导致的差异；如果需要完全固定的构建用户态，可以把构建放进固定 digest 的容器镜像，例如 `golang:<GO_VERSION>-bookworm`。
 - `ubuntu-22.04` 未来可能被 GitHub 退役；届时修改 `.github/workflows/build.yml` 的 matrix 即可。
 - CI 首次运行会下载 Go 工具链和 Go modules，之后 runner 上的构建缓存不会跨 job 复用；这不影响产物字节。
