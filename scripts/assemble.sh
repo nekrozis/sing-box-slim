@@ -62,6 +62,7 @@ Linux:
 
 Windows:
   ${windows_name} version
+  WinDivert64.sys is external; place WinDivert 2.2.2 next to the exe for bridge or TLS spoof.
 
 Verify checksums:
   sha256sum -c SHA256SUMS

@@ -50,6 +50,12 @@ fi
 tags="with_gvisor,with_quic,with_dhcp,with_wireguard,with_utls,with_acme,with_clash_api,with_tailscale,with_cloudflared,with_openvpn,with_openconnect,badlinkname,tfogo_checklinkname0"
 removed_tags="with_naive_outbound with_purego with_usbip with_ccm with_ocm"
 
+if [ "$target_os" = "windows" ]; then
+  # Keep WinDivert and USB/IP drivers out of the executable. WinDivert is read
+  # from next to the executable if bridge or TLS spoofing is used at runtime.
+  tags="${tags},with_external_windivert,with_external_usbip_drivers"
+fi
+
 ldflags="-X github.com/sagernet/sing-box/constant.Version=${version} -X runtime.godebugDefault=multipathtcp=0,tlssha1=1 -checklinkname=0 -s -w -buildid="
 
 binary="sing-box"

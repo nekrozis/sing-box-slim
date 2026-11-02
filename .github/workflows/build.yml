@@ -216,3 +216,8 @@ jobs:
               throw "unexpected tag in binary: $tag"
             }
           }
+          foreach ($tag in @('with_external_windivert', 'with_external_usbip_drivers')) {
+            if (-not ($output -match [regex]::Escape($tag))) {
+              throw "missing Windows tag in binary: $tag"
+            }
+          }
