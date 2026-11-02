@@ -102,6 +102,19 @@ The binary keeps reporting the upstream sing-box version (`sing-box version 1.14
 
    The release is `1.14.4-2`; the binary still reports `1.14.4`.
 
+## Automated checks
+
+The `version-check` workflow runs daily at `03:17 UTC`:
+
+- It checks the latest stable sing-box release and Go toolchain.
+- It updates `versions.env` and opens or updates the `automation/version-update` pull request.
+- It assigns the PR to `nekrozis` and creates or updates a `version-update` issue as a notification.
+- It never merges automatically.
+
+The automation applies the same `PKGREL` rules described above. Review the PR, let CI run, merge it, and then publish the release.
+
+PR checks triggered by `GITHUB_TOKEN` may be suppressed by GitHub. Add a fine-grained personal access token with Contents, Pull requests, and Issues write access as the `VERSION_UPDATE_TOKEN` repository secret to let PR checks run automatically.
+
 ## Files to change
 
 For a normal version update, change only `versions.env`.

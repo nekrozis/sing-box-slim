@@ -1,0 +1,90 @@
+name: version-check
+
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: version-check
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: check upstream versions
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Ensure version-update label
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh label create version-update --color 1d76db --description "Automated version update" --force
+      - name: Check upstream versions
+        id: check
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: ./scripts/check-updates.sh
+      - name: Create or update pull request
+        id: pr
+        if: steps.check.outputs.changed == 'true'
+        uses: peter-evans/create-pull-request@v8.1.1
+        with:
+          token: ${{ secrets.VERSION_UPDATE_TOKEN || github.token }}
+          branch: automation/version-update
+          base: main
+          delete-branch: true
+          title: ${{ steps.check.outputs.pr_title }}
+          commit-message: ${{ steps.check.outputs.commit_message }}
+          body-path: version-update.md
+          labels: version-update
+          assignees: nekrozis
+          add-paths: versions.env
+      - name: Notify
+        if: steps.check.outputs.changed == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_URL: ${{ steps.pr.outputs.pull-request-url }}
+        run: |
+          set -euo pipefail
+          if [ -z "$PR_URL" ]; then
+            PR_URL="$(gh pr list --head automation/version-update --state open --json url --jq '.[0].url // empty')"
+          fi
+          body="$(cat version-update.md)"
+          if [ -n "$PR_URL" ]; then
+            body="${body}"$'\n\n'"Pull request: ${PR_URL}"
+          fi
+          body="${body}"$'\n\n'"@nekrozis"
+          existing_number="$(gh issue list --label version-update --state open --json number --jq '.[0].number // empty')"
+          existing_title="$(gh issue list --label version-update --state open --json title --jq '.[0].title // empty')"
+          if [ -n "$existing_number" ]; then
+            if [ "$existing_title" != "${{ steps.check.outputs.pr_title }}" ]; then
+              gh issue comment "$existing_number" --body "$body"
+              gh issue edit "$existing_number" --title "${{ steps.check.outputs.pr_title }}"
+            fi
+          else
+            gh issue create \
+              --title "${{ steps.check.outputs.pr_title }}" \
+              --body "$body" \
+              --assignee nekrozis \
+              --label version-update
+          fi
+      - name: Close stale notification
+        if: steps.check.outputs.changed == 'false'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh issue list --label version-update --state open --json number --jq '.[].number' |
+            while IFS= read -r number; do
+              [ -n "$number" ] || continue
+              gh issue close "$number" --comment "sing-box and Go are up to date."
+            done

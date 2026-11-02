@@ -183,11 +183,33 @@ gh workflow run build-sing-box --ref main -f publish_release=true
 
 See [UPDATING.md](UPDATING.md) for the complete version update procedure.
 
+## Automated version checks
+
+A separate `version-check` workflow runs daily at `03:17 UTC` and on manual dispatch. It checks:
+
+- the latest stable sing-box release;
+- the latest stable Go toolchain.
+
+When either version changes, the workflow:
+
+1. updates `versions.env`;
+2. opens or updates the `automation/version-update` pull request;
+3. assigns the pull request to `nekrozis`;
+4. creates or updates a `version-update` issue assigned to `nekrozis` as the notification.
+
+The PR is never merged automatically. `PKGREL` follows the normal rules: reset to `1` for a sing-box update, increment for a Go-only rebuild.
+
+Add a fine-grained personal access token as the `VERSION_UPDATE_TOKEN` repository secret to let PR checks run automatically. Without it, the PR is created with `GITHUB_TOKEN`, and GitHub may suppress workflow runs for that PR; run the build workflow manually on the branch or merge the PR after review.
+
+Automated checks only manage `SING_BOX_REF` values that are `v` tags. A commit- or branch-pinned `SING_BOX_REF` is left unchanged.
+
 ## Repository layout
 
 ```text
 .
-├── .github/workflows/build.yml
+├── .github/workflows/
+│   ├── build.yml
+│   └── version-check.yml
 ├── Makefile
 ├── README.md
 ├── UPDATING.md
@@ -195,6 +217,7 @@ See [UPDATING.md](UPDATING.md) for the complete version update procedure.
 ├── scripts/
 │   ├── fetch-sing-box.sh
 │   ├── resolve-version.sh
+│   ├── check-updates.sh
 │   ├── build.sh
 │   ├── verify-reproducible.sh
 │   ├── assemble.sh
