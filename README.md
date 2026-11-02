@@ -1,43 +1,55 @@
 # sing-box slim reproducible builds
 
-用 GitHub Actions 构建无 CGO 的 sing-box，覆盖 Linux 和 Windows 的 `amd64` 目标，按 `GOAMD64=v3` 编译，并在 CI 中通过两次独立构建逐字节校验可重现性。
+Builds a no-CGO sing-box for Linux and Windows `amd64` with `GOAMD64=v3`. With the same source commit, Go toolchain, build tags, and flags, the resulting binaries are byte-identical.
 
-## 结论
+## Outputs
 
-可以实现。本仓库已经在本地用两个不同源码路径、两个独立 `GOCACHE` 验证过同一目标的 SHA256 完全一致：
+Each target produces:
 
-| 目标 | SHA256 |
-| --- | --- |
-| `linux/amd64` (`GOAMD64=v3`, CGO off) | `8c049a001c1ffd185a9fe60cf23ca9fb71d774fcd7192b9280a2b27474af07cd` |
-| `windows/amd64` (`GOAMD64=v3`, CGO off) | `cd97efc17cdaa83305dba8a94b021dd51d50c82afe3104a3bca7474ddd2d9176` |
+- `sing-box` (Linux) or `sing-box.exe` (Windows)
+- `<binary>.sha256`
+- `build-info.txt`
 
-以上哈希对应 `versions.env` 当前的 sing-box `v1.14.4`（commit `c005f35300ce76427dc285481ec5695f5b179cd2`）和 Go `1.27.3`。
+The CI artifact is named `sing-box-<version>-amd64v3` and contains:
 
-## 版本来源
+```text
+sing-box_<version>_linux_amd64v3
+sing-box_<version>_windows_amd64v3.exe
+SHA256SUMS
+build-info-linux.txt
+build-info-windows.txt
+README.txt
+```
 
-版本不写死在 CI 中。解析顺序：
+Verify it with:
 
-1. `workflow_dispatch` 输入，或本地环境变量。
-2. 仓库根目录的 `versions.env`。
-3. 两者都没有时，`meta` job 或本地脚本直接失败。
+```bash
+sha256sum -c SHA256SUMS
+```
 
-`versions.env` 是唯一默认来源：
+## Version management
+
+`versions.env` is the managed version source:
 
 ```text
 SING_BOX_REF=v1.14.4
 GO_VERSION=1.27.3
 ```
 
-修改默认版本只需编辑这个文件。`SING_BOX_VERSION` 是可选的结果标签覆盖，不属于必须解析的版本。
+Resolution order:
 
-## 构建配置
+1. Workflow input or environment variable.
+2. `versions.env`.
+3. Hard failure.
 
-- sing-box 版本：由 `versions.env` 的 `SING_BOX_REF` 管理，支持 tag、branch 或 commit；workflow input 可临时覆盖。
-- Go 版本：由 `versions.env` 的 `GO_VERSION` 管理；workflow input 可临时覆盖。精确锁定，`GOTOOLCHAIN=local` 禁止自动切换。
-- `CGO_ENABLED=0`。
-- 目标：`linux/amd64`、`windows/amd64`。
-- `GOAMD64=v3`，产物需要支持 AVX2 等 x86-64-v3 指令集的 CPU。
-- 保留的 tags：
+No version defaults are built into CI. Edit `versions.env` to change the default versions. After changing `SING_BOX_REF`, run `make fetch` to update an existing `sing-box/` clone.
+
+## Build configuration
+
+- `CGO_ENABLED=0`
+- `linux/amd64` and `windows/amd64`
+- `GOAMD64=v3`
+- Base tags:
 
   ```text
   with_gvisor,with_quic,with_dhcp,with_wireguard,with_utls,with_acme,
@@ -45,77 +57,58 @@ GO_VERSION=1.27.3
   with_openconnect,badlinkname,tfogo_checklinkname0
   ```
 
-- 移除的 tags：`with_naive_outbound`、`with_purego`、`with_usbip`、`with_ccm`、`with_ocm`。
-- 版本号通过 `-X github.com/sagernet/sing-box/constant.Version=<version>` 注入，不依赖构建目录的 VCS 状态。
-- 链接参数沿用上游 release 配置：
+- Windows adds:
 
   ```text
-  -X runtime.godebugDefault=multipathtcp=0,tlssha1=1 -checklinkname=0 -s -w -buildid=
+  with_external_windivert,with_external_usbip_drivers
   ```
 
-- `-trimpath` 去除本地路径。
-- `-buildvcs=false` 去除 VCS 元数据。
-- `-s -w` 去除 ELF/PE 符号表和 DWARF。
-- `-buildid=` 清空 Go build ID。
-- `-mod=readonly` 和 `go mod verify` 保证依赖与 `go.sum` 一致。
+- Removed tags:
 
-`-s` 不能去掉 Go 运行时需要的 pclntab（函数名和行号表），否则 panic 栈和 `runtime` 功能会受影响；它去掉的是链接符号表和 DWARF 调试信息。
+  ```text
+  with_naive_outbound,with_purego,with_usbip,with_ccm,with_ocm
+  ```
 
-`go version -m` 仍会显示模块版本、`GOOS`、`GOARCH`、`GOAMD64`、`CGO_ENABLED` 和 `-tags` 等构建信息；其中不再包含 `vcs.revision`、`vcs.time`、`vcs.modified`。这些保留的字段是 Go 运行时和 `go version -m` 需要的，不影响可重现性。
+- Linker and build flags:
 
-## 可重现性约定
+  ```text
+  -trimpath
+  -buildvcs=false
+  -mod=readonly
+  -s -w -buildid=
+  -X github.com/sagernet/sing-box/constant.Version=<version>
+  -X runtime.godebugDefault=multipathtcp=0,tlssha1=1
+  -checklinkname=0
+  ```
 
-两次构建只有在以下输入完全相同时才保证得到相同字节：
+`with_external_windivert` keeps the WinDivert kernel driver out of the Windows executable. `bridge` and TLS spoof then require `WinDivert64.sys` (WinDivert 2.2.2) next to the executable; its SHA256 is checked and administrator privileges are required. Wintun remains embedded. `with_external_usbip_drivers` is included for the Windows tag set; USB/IP is disabled, so no USB/IP driver is built.
 
-1. sing-box 源码 commit（建议用 commit SHA，不要依赖可能移动的 tag 名）。
-2. Go toolchain 版本和发行版（CI 使用 `actions/setup-go` 下载的官方工具链）。
-3. `GOOS`、`GOARCH`、`GOAMD64`。
-4. 构建 tags 列表。
-5. 编译和链接参数，包括 `CGO_ENABLED=0`。
+## Reproducibility
 
-CI 的 `build` job 在 `ubuntu-24.04` 和 `ubuntu-22.04` 上分别构建同一目标，`verify` job 用 `cmp` 和 SHA256 比较两组产物；任何字节差异都会让 workflow 失败。`build.sh` 还会检查：
+The build is reproducible when all of these inputs match:
 
-- 构建信息中的 `CGO_ENABLED=0`、`GOOS`、`GOARCH=amd64`、`GOAMD64=v3`、`-trimpath=true`、`-tags`。
-- 构建信息中不存在 VCS 字段。
-- 二进制中不存在源码目录路径。
-- ELF/PE 符号表已经被剥离。
-- Linux 二进制可以运行，`sing-box version` 输出正确，且不含被移除的 tags。
-- Windows 二进制由 `windows-latest` job 下载后校验 SHA256 并实际运行 `version`。
+1. sing-box source commit.
+2. Exact Go toolchain version.
+3. `GOOS`, `GOARCH=amd64`, `GOAMD64=v3`.
+4. Build tags.
+5. Compiler/linker flags and `CGO_ENABLED=0`.
 
-## 目录结构
+CI builds every target twice on `ubuntu-24.04` and `ubuntu-22.04` and compares the outputs byte by byte. The `verify` job fails on any difference.
 
-```text
-.
-├── .github/workflows/build.yml   # GitHub Actions
-├── Makefile
-├── README.md
-├── versions.env                  # 受管理的 sing-box / Go 版本
-├── scripts/
-│   ├── fetch-sing-box.sh         # 拉取指定 tag/branch/commit
-│   ├── resolve-version.sh        # 版本解析：环境变量 > versions.env
-│   ├── build.sh                  # 单目标构建 + 元数据检查
-│   ├── verify-reproducible.sh    # 两次构建逐字节比较
-│   ├── assemble.sh               # 汇总最终产物和 SHA256SUMS
-│   └── local-repro.sh            # 本地双构建校验
-└── sing-box/                     # 源码克隆目录，已被 .gitignore 忽略
-```
-
-`sing-box/` 不进入本仓库。`.gitignore` 同时忽略 `dist/`、`out/` 和 `repro-artifacts/`。
-
-## 本地使用
+## Local usage
 
 ```bash
-# 按 versions.env 的 SING_BOX_REF 克隆源码到 ./sing-box
+# Clone SING_BOX_REF from versions.env into ./sing-box
 make source
 
-# 构建 Linux + Windows
+# Build Linux and Windows
 make build
 
-# 用两个不同源码路径和独立 GOCACHE 做可重现性校验
+# Build twice with separate caches and compare
 make repro
 ```
 
-产物：
+Local outputs:
 
 ```text
 dist/linux-amd64v3/sing-box
@@ -127,59 +120,63 @@ dist/windows-amd64v3/sing-box.exe.sha256
 dist/windows-amd64v3/build-info.txt
 ```
 
-临时覆盖 `versions.env`：
+Override the managed versions for a single build:
 
 ```bash
-# 切换源码版本；会重新克隆 sing-box/
+# Change the source ref and re-clone
 make fetch SING_BOX_REF=v1.14.4
 
-# 临时换 Go 版本和结果标签
+# Override the Go version and result label
 make build GO_VERSION=1.27.3 SING_BOX_VERSION=v1.14.4
 ```
 
-如果 `SING_BOX_REF`/`GO_VERSION` 既没有通过环境变量或命令行传入，也不在 `versions.env` 中，Makefile 和 `local-repro.sh` 会直接报错退出。
-
-`make fetch` 会删除并重新克隆 `sing-box/`，本地对该目录的修改会丢失。修改 `versions.env` 的 `SING_BOX_REF` 后，也要执行 `make fetch` 更新已存在的 `sing-box/`；`make source` 只在目录缺失时克隆。
+If `SING_BOX_REF` or `GO_VERSION` is neither passed explicitly nor present in `versions.env`, the local scripts fail before building.
 
 ## GitHub Actions
 
-把仓库推送到 GitHub 后，在 Actions 中运行 `build-sing-box`，或直接 push 到 `main`。`workflow_dispatch` 输入：
+Push the repository to GitHub, then run the `build-sing-box` workflow or push to `main`.
 
-| 输入 | 默认值 | 说明 |
+`workflow_dispatch` inputs:
+
+| Input | Default | Description |
 | --- | --- | --- |
-| `sing_box_ref` | 空（回退到 `versions.env`） | sing-box tag、branch 或 commit SHA |
-| `sing_box_version` | 空 | 可选的版本标签；留空时 tag 用 tag 名，commit 用 `0.0.0-<sha>` |
-| `go_version` | 空（回退到 `versions.env`） | Go 工具链版本，必须是精确版本，不能写 `1.27` 或版本范围 |
+| `sing_box_ref` | empty (falls back to `versions.env`) | sing-box tag, branch, or commit SHA |
+| `sing_box_version` | empty | Optional result label; defaults to the tag name or `0.0.0-<sha>` |
+| `go_version` | empty (falls back to `versions.env`) | Exact Go toolchain version |
 
-Job 流程：
+Jobs:
 
-1. `meta`：先解析 `SING_BOX_REF`/`GO_VERSION`（输入 > `versions.env` > 失败），再拉取源码，解析 commit、版本号和 commit 时间戳。版本解析失败时不会进入构建。
-2. `build`：4 个矩阵任务，Linux/Windows × `ubuntu-24.04`/`ubuntu-22.04`。Windows 目标在 Linux runner 上交叉编译。
-3. `verify`：下载 4 组产物，逐字节比较；运行 Linux 产物；汇总最终 artifact。
-4. `smoke-windows`：在 `windows-latest` 上校验 SHA256 并实际运行 `sing-box.exe version`，确认交叉编译产物可用。
+1. `meta` resolves versions, fetches the source, and records the commit and timestamp. It fails before building if the versions cannot be resolved.
+2. `build` runs the Linux and Windows builds on two runner images.
+3. `verify` compares both builds byte by byte, runs the Linux binary, and assembles the final artifact.
+4. `smoke-windows` checks the Windows checksum and runs `sing-box.exe version` on `windows-latest`.
 
-最终 artifact 名为 `sing-box-<version>-amd64v3`，包含：
+Windows binaries are cross-compiled on Linux and smoke-tested on Windows.
+
+## Repository layout
 
 ```text
-sing-box_<version>_linux_amd64v3
-sing-box_<version>_windows_amd64v3.exe
-SHA256SUMS
-build-info-linux.txt
-build-info-windows.txt
-README.txt
+.
+├── .github/workflows/build.yml
+├── Makefile
+├── README.md
+├── versions.env
+├── scripts/
+│   ├── fetch-sing-box.sh
+│   ├── resolve-version.sh
+│   ├── build.sh
+│   ├── verify-reproducible.sh
+│   ├── assemble.sh
+│   └── local-repro.sh
+└── sing-box/        # ignored source clone, not a git submodule
 ```
 
-校验：
+The `sing-box/` directory is cloned at build time and excluded by `.gitignore`. This repository does not use a git submodule.
 
-```bash
-sha256sum -c SHA256SUMS
-```
+## Requirements and limits
 
-## 注意事项
-
-- `GOAMD64=v3` 产物不能在只支持 x86-64-v1/v2 的 CPU 上运行；会因非法指令崩溃。
-- 只构建 `amd64`，没有 ARM64 产物。
-- 严格复现需要相同的源码 commit 和相同的 Go 版本。tag 可能被上游移动，长期归档建议使用 commit SHA。
-- GitHub 托管 runner 镜像会更新。CI 的双 runner 比较可以发现 toolchain 或环境导致的差异；如果需要完全固定的构建用户态，可以把构建放进固定 digest 的容器镜像，例如 `golang:<GO_VERSION>-bookworm`。
-- `ubuntu-22.04` 未来可能被 GitHub 退役；届时修改 `.github/workflows/build.yml` 的 matrix 即可。
-- CI 首次运行会下载 Go 工具链和 Go modules，之后 runner 上的构建缓存不会跨 job 复用；这不影响产物字节。
+- The binary requires an x86-64-v3 CPU (AVX2 and related extensions).
+- The exact Go toolchain version from `versions.env` is required. `GOTOOLCHAIN=local` prevents automatic switching.
+- Tags can move upstream; use a commit SHA for strict long-term pinning.
+- Only `amd64` is built.
+- Raw binaries are published; no tar or zip archives are produced.
