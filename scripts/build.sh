@@ -47,6 +47,16 @@ if [ -z "$version" ]; then
   exit 2
 fi
 
+pkgrel="${PKGREL:-}"
+release_version="${RELEASE_VERSION:-}"
+if [ -z "$release_version" ]; then
+  if [ -n "$pkgrel" ]; then
+    release_version="${version}-${pkgrel}"
+  else
+    release_version="${version}"
+  fi
+fi
+
 tags="with_gvisor,with_quic,with_dhcp,with_wireguard,with_utls,with_acme,with_clash_api,with_tailscale,with_cloudflared,with_openvpn,with_openconnect,badlinkname,tfogo_checklinkname0"
 removed_tags="with_naive_outbound with_purego with_usbip with_ccm with_ocm"
 
@@ -57,6 +67,12 @@ if [ "$target_os" = "windows" ]; then
 fi
 
 ldflags="-X github.com/sagernet/sing-box/constant.Version=${version} -X runtime.godebugDefault=multipathtcp=0,tlssha1=1 -checklinkname=0 -s -w -buildid="
+
+build_args=()
+if [ "$target_os" = "linux" ]; then
+  build_args+=(-buildmode=pie)
+  ldflags="${ldflags} -bindnow"
+fi
 
 binary="sing-box"
 if [ "$target_os" = "windows" ]; then
@@ -98,6 +114,7 @@ echo "source commit: ${actual_commit}"
 (
   cd "$source_dir"
   go build \
+    "${build_args[@]}" \
     -trimpath \
     -buildvcs=false \
     -mod=readonly \
@@ -127,6 +144,40 @@ if grep -Eq 'vcs\.(revision|time|modified)=|(^|[[:space:]])vcs=' <<<"$build_info
   echo "build metadata check failed: VCS metadata is present" >&2
   echo "$build_info" >&2
   exit 1
+fi
+
+if [ "$target_os" = "linux" ]; then
+  if ! grep -Fq -- "-buildmode=pie" <<<"$build_info"; then
+    echo "build metadata check failed: Linux binary is not PIE" >&2
+    exit 1
+  fi
+  if command -v readelf >/dev/null 2>&1; then
+    elf_header="$(readelf -hW "$output")"
+    elf_program="$(readelf -lW "$output")"
+    elf_dynamic="$(readelf -dW "$output")"
+    if ! grep -Eq 'Type:[[:space:]]+DYN' <<<"$elf_header"; then
+      echo "ELF hardening check failed: not ET_DYN" >&2
+      exit 1
+    fi
+    if ! grep -Fq "GNU_RELRO" <<<"$elf_program"; then
+      echo "ELF hardening check failed: GNU_RELRO missing" >&2
+      exit 1
+    fi
+    if ! grep -Eq 'GNU_STACK.* RW([[:space:]]|$)' <<<"$elf_program"; then
+      echo "ELF hardening check failed: GNU_STACK is not non-executable" >&2
+      exit 1
+    fi
+    if ! grep -Fq "BIND_NOW" <<<"$elf_dynamic"; then
+      echo "ELF hardening check failed: BIND_NOW missing" >&2
+      exit 1
+    fi
+    if ! grep -Eq 'FLAGS_1.*PIE' <<<"$elf_dynamic"; then
+      echo "ELF hardening check failed: PIE flag missing" >&2
+      exit 1
+    fi
+  else
+    echo "readelf not found; skipping ELF hardening checks" >&2
+  fi
 fi
 
 if grep -aFq -- "$source_dir" "$output"; then
@@ -169,6 +220,7 @@ epoch="${SOURCE_DATE_EPOCH:-$(git -C "$source_dir" log -1 --format=%ct)}"
 
 {
   echo "sing-box version: ${version}"
+  echo "Release version: ${release_version}"
   echo "sing-box commit: ${actual_commit}"
   echo "Go version: ${go_version}"
   echo "GOOS: ${target_os}"

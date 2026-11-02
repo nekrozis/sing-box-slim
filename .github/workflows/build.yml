@@ -18,6 +18,16 @@ on:
         required: false
         default: ""
         type: string
+      pkgrel:
+        description: "Arch-style rebuild counter (default: versions.env), e.g. 1 for 1.14.4-1"
+        required: false
+        default: ""
+        type: string
+      publish_release:
+        description: "Publish a GitHub Release after all checks pass"
+        required: false
+        default: false
+        type: boolean
   push:
     branches: [main]
   pull_request:
@@ -45,8 +55,11 @@ jobs:
     outputs:
       sing_box_ref: ${{ steps.versions.outputs.sing_box_ref }}
       go_version: ${{ steps.versions.outputs.go_version }}
+      pkgrel: ${{ steps.versions.outputs.pkgrel }}
       version: ${{ steps.resolve.outputs.version }}
       version_number: ${{ steps.resolve.outputs.version_number }}
+      release_version: ${{ steps.resolve.outputs.release_version }}
+      release_tag: ${{ steps.resolve.outputs.release_tag }}
       commit: ${{ steps.resolve.outputs.commit }}
       epoch: ${{ steps.resolve.outputs.epoch }}
     steps:
@@ -57,21 +70,37 @@ jobs:
         env:
           SING_BOX_REF: ${{ github.event_name == 'workflow_dispatch' && inputs.sing_box_ref || '' }}
           GO_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.go_version || '' }}
+          PKGREL: ${{ github.event_name == 'workflow_dispatch' && inputs.pkgrel || '' }}
         run: |
           set -euo pipefail
           sing_box_ref="$(./scripts/resolve-version.sh SING_BOX_REF)"
           go_version="$(./scripts/resolve-version.sh GO_VERSION)"
+          pkgrel="$(./scripts/resolve-version.sh PKGREL)"
+          case "$pkgrel" in
+            *[!0-9]*)
+              echo "invalid PKGREL: ${pkgrel}; expected a positive integer" >&2
+              exit 1
+              ;;
+          esac
+          if [ "$pkgrel" -lt 1 ]; then
+            echo "invalid PKGREL: ${pkgrel}; expected a positive integer" >&2
+            exit 1
+          fi
           {
             echo "sing_box_ref=${sing_box_ref}"
             echo "go_version=${go_version}"
+            echo "pkgrel=${pkgrel}"
           } >>"$GITHUB_OUTPUT"
           echo "sing-box ref: ${sing_box_ref}"
           echo "Go version: ${go_version}"
+          echo "Package release: ${pkgrel}"
       - name: Fetch sing-box source
         run: ./scripts/fetch-sing-box.sh "${{ steps.versions.outputs.sing_box_ref }}" sing-box
       - name: Resolve version, commit, and timestamp
         id: resolve
         shell: bash
+        env:
+          PKGREL: ${{ steps.versions.outputs.pkgrel }}
         run: |
           set -euo pipefail
           version="${SING_BOX_VERSION_OVERRIDE:-}"
@@ -89,15 +118,19 @@ jobs:
               ;;
           esac
           version_number="${version#v}"
+          release_version="${version_number}-${PKGREL}"
+          release_tag="v${release_version}"
           commit="$(git -C sing-box rev-parse HEAD)"
           epoch="$(git -C sing-box log -1 --format=%ct)"
           {
             echo "version=${version}"
             echo "version_number=${version_number}"
+            echo "release_version=${release_version}"
+            echo "release_tag=${release_tag}"
             echo "commit=${commit}"
             echo "epoch=${epoch}"
           } >>"$GITHUB_OUTPUT"
-          echo "sing-box ${version} (${commit}), source date epoch ${epoch}"
+          echo "sing-box ${version} (${commit}), release ${release_version}, source date epoch ${epoch}"
 
   build:
     name: build ${{ matrix.target }} / ${{ matrix.flavor }} / ${{ matrix.runner }}
@@ -134,6 +167,8 @@ jobs:
           TARGET_OS: ${{ matrix.target }}
           OUTPUT_DIR: out/${{ matrix.flavor }}-${{ matrix.target }}
           SING_BOX_VERSION: ${{ needs.meta.outputs.version }}
+          RELEASE_VERSION: ${{ needs.meta.outputs.release_version }}
+          PKGREL: ${{ needs.meta.outputs.pkgrel }}
           SING_BOX_COMMIT: ${{ needs.meta.outputs.commit }}
           GO_VERSION: ${{ needs.meta.outputs.go_version }}
           SOURCE_DATE_EPOCH: ${{ needs.meta.outputs.epoch }}
@@ -174,11 +209,12 @@ jobs:
       - name: Assemble release files
         env:
           SING_BOX_VERSION: ${{ needs.meta.outputs.version }}
+          RELEASE_VERSION: ${{ needs.meta.outputs.release_version }}
         run: ./scripts/assemble.sh artifacts dist
       - name: Upload final artifact
         uses: actions/upload-artifact@v7.0.2
         with:
-          name: sing-box-${{ needs.meta.outputs.version }}-amd64v3
+          name: sing-box-${{ needs.meta.outputs.release_tag }}-amd64v3
           path: dist/
           if-no-files-found: error
           retention-days: 30
@@ -221,3 +257,70 @@ jobs:
               throw "missing Windows tag in binary: $tag"
             }
           }
+
+  release:
+    name: publish GitHub Release
+    needs: [meta, verify, smoke-windows]
+    if: github.event_name == 'workflow_dispatch' && inputs.publish_release
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: Download final artifact
+        uses: actions/download-artifact@v8.0.2
+        with:
+          name: sing-box-${{ needs.meta.outputs.release_tag }}-amd64v3
+          path: release
+      - name: Build release notes
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ needs.meta.outputs.release_version }}
+          BASE_VERSION: ${{ needs.meta.outputs.version_number }}
+          PKGREL: ${{ needs.meta.outputs.pkgrel }}
+          COMMIT: ${{ needs.meta.outputs.commit }}
+          GO_VERSION: ${{ needs.meta.outputs.go_version }}
+        run: |
+          set -euo pipefail
+          {
+            echo "# sing-box ${RELEASE_VERSION}"
+            echo
+            echo "- Upstream sing-box: ${BASE_VERSION}"
+            echo "- Go toolchain: ${GO_VERSION}"
+            echo "- Source commit: ${COMMIT}"
+            echo "- Arch-style pkgrel: ${PKGREL}"
+            echo "- Binary version output: \`sing-box version ${BASE_VERSION}\`"
+            echo
+            if [ "$PKGREL" -gt 1 ]; then
+              echo "This is rebuild ${PKGREL} for the same upstream sing-box version. The upstream source is unchanged; the rebuild reflects a Go/toolchain or packaging change."
+            else
+              echo "This is the first build of upstream sing-box ${BASE_VERSION}."
+            fi
+            echo
+            echo "## Checksums"
+            echo
+            echo '```'
+            cat release/SHA256SUMS
+            echo '```'
+            echo
+            echo "See \`README.txt\` in the assets for usage and driver notes."
+          } > release-notes.md
+          cat release-notes.md
+      - name: Publish release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.meta.outputs.release_tag }}
+          RELEASE_VERSION: ${{ needs.meta.outputs.release_version }}
+        run: |
+          set -euo pipefail
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" release/* --clobber
+            gh release edit "$RELEASE_TAG" --title "sing-box $RELEASE_VERSION" --notes-file release-notes.md --latest
+          else
+            gh release create "$RELEASE_TAG" release/* \
+              --title "sing-box $RELEASE_VERSION" \
+              --notes-file release-notes.md \
+              --target "$GITHUB_SHA" \
+              --latest
+          fi

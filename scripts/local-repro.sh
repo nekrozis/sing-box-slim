@@ -8,7 +8,8 @@ source_dir="${SING_BOX_SOURCE:-sing-box}"
 
 SING_BOX_REF="$(./scripts/resolve-version.sh SING_BOX_REF)"
 GO_VERSION="$(./scripts/resolve-version.sh GO_VERSION)"
-export SING_BOX_REF GO_VERSION
+PKGREL="$(./scripts/resolve-version.sh PKGREL)"
+export SING_BOX_REF GO_VERSION PKGREL
 
 if [ ! -d "$source_dir/.git" ]; then
   ./scripts/fetch-sing-box.sh "$SING_BOX_REF" "$source_dir"

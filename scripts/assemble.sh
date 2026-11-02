@@ -7,7 +7,14 @@ cd "$repo_root"
 artifacts="${1:?usage: $0 <artifacts-directory> [dist-directory]}"
 dist="${2:-dist}"
 version="${SING_BOX_VERSION:?SING_BOX_VERSION is required}"
-version_number="${version#v}"
+release_version="${RELEASE_VERSION:-}"
+if [ -z "$release_version" ]; then
+  release_version="${version#v}"
+  if [ -n "${PKGREL:-}" ]; then
+    release_version="${release_version}-${PKGREL}"
+  fi
+fi
+release_version="${release_version#v}"
 
 case "$dist" in
   "" | "/" | "." | "..")
@@ -31,8 +38,8 @@ done
 rm -rf "$dist"
 mkdir -p "$dist"
 
-linux_name="sing-box_${version_number}_linux_amd64v3"
-windows_name="sing-box_${version_number}_windows_amd64v3.exe"
+linux_name="sing-box_${release_version}_linux_amd64v3"
+windows_name="sing-box_${release_version}_windows_amd64v3.exe"
 
 cp "$linux_src" "${dist}/${linux_name}"
 cp "$windows_src" "${dist}/${windows_name}"
@@ -52,6 +59,7 @@ tags="$(sed -n 's/^Tags: //p' "${dist}/build-info-linux.txt")"
 
 cat >"${dist}/README.txt" <<EOF
 sing-box ${version} (${commit})
+Release version: ${release_version}
 Go toolchain ${go_version}, CGO disabled, GOAMD64=v3
 CPU requirement: x86-64-v3 (AVX2)
 Tags: ${tags}
